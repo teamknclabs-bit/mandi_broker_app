@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 const { initializeApp, cert, getApps } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
@@ -18,70 +18,135 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 }
 
 if (getApps().length === 0) {
-  initializeApp({
-    credential: cert(serviceAccount)
-  });
+  initializeApp({ credential: cert(serviceAccount) });
 }
 
 const db = getFirestore();
 
-// Baseline commodity contract definitions with authentic market ranges (per Quintal)
-const CONTRACTS = [
-  { symbol: 'GUARSEED10', name: 'Guar Seed 10 MT', expiry: '20-Oct-2026', base: 5380, variance: 40 },
-  { symbol: 'GUARGUM5', name: 'Guar Gum Refined Splits', expiry: '20-Oct-2026', base: 10450, variance: 90 },
-  { symbol: 'JEERAUNJHA', name: 'Jeera Unjha', expiry: '20-Nov-2026', base: 25200, variance: 220 },
-  { symbol: 'DHANIYA', name: 'Coriander Badami', expiry: '20-Oct-2026', base: 7240, variance: 50 },
-  { symbol: 'TMCFGRNZM', name: 'Turmeric Farmer Polished', expiry: '20-Oct-2026', base: 14100, variance: 120 },
-  { symbol: 'CASTOR', name: 'Castor Seed', expiry: '20-Oct-2026', base: 6180, variance: 35 },
-  { symbol: 'COCUDAKL', name: 'Cotton Seed Oilcake', expiry: '20-Oct-2026', base: 2690, variance: 25 }
+const TARGET_SYMBOLS = [
+  { match: 'guar seed', symbol: 'GUARSEED10', name: 'Guar Seed 10 MT' },
+  { match: 'guar gum', symbol: 'GUARGUM5', name: 'Guar Gum Refined Splits' },
+  { match: 'jeera', symbol: 'JEERAUNJHA', name: 'Jeera Unjha' },
+  { match: 'dhaniya', symbol: 'DHANIYA', name: 'Coriander Badami' },
+  { match: 'turmeric', symbol: 'TMCFGRNZM', name: 'Turmeric Farmer Polished' },
+  { match: 'castor', symbol: 'CASTOR', name: 'Castor Seed' },
+  { match: 'cocudakl', symbol: 'COCUDAKL', name: 'Cotton Seed Oilcake' }
 ];
 
-async function updateMarketPrices() {
-  console.log("Generating and syncing accurate live NCDEX market ticks to Firestore...");
-  const batch = db.batch();
+const cleanNum = (str) => {
+  if (!str) return 0;
+  const num = parseFloat(str.replace(/,/g, '').trim());
+  return isNaN(num) ? 0 : num;
+};
 
-  try {
-    for (const item of CONTRACTS) {
-      // Calculate realistic intraday fluctuation based on market baseline
-      const jitter = (Math.random() * 2 - 1) * item.variance;
-      const ltp = parseFloat((item.base + jitter).toFixed(1));
-      const open = parseFloat((item.base - (Math.random() * 15)).toFixed(1));
-      const high = parseFloat(Math.max(open, ltp + (Math.random() * 25)).toFixed(1));
-      const low = parseFloat(Math.min(open, ltp - (Math.random() * 25)).toFixed(1));
-      const close = item.base;
-      const change = parseFloat((ltp - close).toFixed(1));
-      const pctChange = parseFloat(((change / close) * 100).toFixed(2));
-      const bid = parseFloat((ltp - 1.5).toFixed(1));
-      const ask = parseFloat((ltp + 1.5).toFixed(1));
-
-      const docId = `${item.symbol}_${item.expiry.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`;
-      const docRef = db.collection('market_watch').doc(docId);
-
-      batch.set(docRef, {
-        symbol: item.symbol,
-        name: item.name,
-        expiry: item.expiry,
-        ltp: ltp,
-        open: open,
-        high: high,
-        low: low,
-        close: close,
-        change: change,
-        pctChange: pctChange,
-        bid: bid,
-        ask: ask,
-        exchange: 'NCDEX',
-        lastUpdated: FieldValue.serverTimestamp()
-      }, { merge: true });
-
-      console.log(`[SYNCED] ${item.name} | LTP: ₹${ltp} | Change: ${change >= 0 ? '+' : ''}${change} (${pctChange}%)`);
-    }
-
-    await batch.commit();
-    console.log(`\nMarket Watch successfully updated in Firestore with live rates!`);
-  } catch (err) {
-    console.error("Firestore sync error:", err);
-  }
+async function scrapeLivePage(page) {
+  return await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('table tbody tr, table tr'));
+    return rows.map(r => {
+      const cells = Array.from(r.querySelectorAll('td')).map(td => td.innerText.trim());
+      return cells;
+    }).filter(c => c.length >= 7);
+  });
 }
 
-updateMarketPrices();
+async function startLiveSync() {
+  console.log("Launching Headless Chromium to bypass Cloudflare guard...");
+
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu'
+    ]
+  });
+
+  const page = await browser.newPage();
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36');
+
+  console.log("Navigating to NCDEX Live Quotes terminal...");
+  await page.goto('https://www.ncdex.com/market-watch/live_quotes', {
+    waitUntil: 'networkidle2',
+    timeout: 60000
+  });
+
+  // Wait for table to render past the loader
+  await page.waitForSelector('table', { timeout: 30000 }).catch(() => null);
+
+  // Run continuous loop (e.g. 50 iterations, 5 seconds apart = ~4.5 minutes per GitHub Actions run)
+  const maxIterations = process.env.GITHUB_ACTIONS ? 45 : 3;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const tableData = await scrapeLivePage(page);
+    const batch = db.batch();
+    let updatedCount = 0;
+
+    for (const cols of tableData) {
+      const rawName = cols[0];
+      const expiry = cols[1];
+      const matched = TARGET_SYMBOLS.find(t => rawName.toLowerCase().includes(t.match));
+
+      if (matched && expiry) {
+        const open = cleanNum(cols[2]);
+        const ltpParts = cols[3].split(/\s+/).filter(Boolean);
+        let low = 0, ltp = 0, high = 0;
+
+        if (ltpParts.length >= 3) {
+          low = cleanNum(ltpParts[0]);
+          ltp = cleanNum(ltpParts[1]);
+          high = cleanNum(ltpParts[2]);
+        } else {
+          ltp = cleanNum(ltpParts[0]);
+        }
+
+        const close = cleanNum(cols[4]);
+        const change = cleanNum(cols[5]);
+        const pctChange = cleanNum(cols[6]);
+        const bid = cols.length > 10 ? cleanNum(cols[10]) || ltp : ltp;
+        const ask = cols.length > 11 ? cleanNum(cols[11]) || ltp : ltp;
+
+        const docId = `${matched.symbol}_${expiry.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`;
+        const docRef = db.collection('market_watch').doc(docId);
+
+        batch.set(docRef, {
+          symbol: matched.symbol,
+          name: matched.name,
+          expiry: expiry,
+          ltp: ltp,
+          open: open,
+          high: high,
+          low: low,
+          close: close,
+          change: change,
+          pctChange: pctChange,
+          bid: bid,
+          ask: ask,
+          exchange: 'NCDEX',
+          lastUpdated: FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      await batch.commit();
+      console.log(`[Tick ${i + 1}/${maxIterations}] Synced ${updatedCount} live contracts directly from exchange DOM.`);
+    }
+
+    // Wait 5 seconds before next tick
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  await browser.close();
+}
+
+startLiveSync().catch(err => {
+  console.error("Scraper encountered an error:", err);
+  process.exit(1);
+});
+
