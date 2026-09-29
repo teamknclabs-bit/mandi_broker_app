@@ -35,7 +35,7 @@ const TARGET_SYMBOLS = [
 
 const cleanNum = (str) => {
   if (!str) return 0;
-  const num = parseFloat(str.replace(/,/g, '').trim());
+  const num = parseFloat(String(str).replace(/,/g, '').trim());
   return isNaN(num) ? 0 : num;
 };
 
@@ -49,8 +49,8 @@ async function scrapeLivePage(page) {
   });
 }
 
-async function startLiveSync() {
-  console.log("Launching Headless Chromium to bypass Cloudflare guard...");
+async function startConsolidatedSync() {
+  console.log("Launching headless browser for single-document market sync...");
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -68,22 +68,16 @@ async function startLiveSync() {
   const page = await browser.newPage();
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36');
 
-  console.log("Navigating to NCDEX Live Quotes terminal...");
-  await page.goto('https://www.ncdex.com/market-watch/live_quotes', {
-    waitUntil: 'networkidle2',
-    timeout: 60000
-  });
+  try {
+    await page.goto('https://www.ncdex.com/market-watch/live_quotes', {
+      waitUntil: 'networkidle2',
+      timeout: 60000
+    });
 
-  // Wait for table to render past the loader
-  await page.waitForSelector('table', { timeout: 30000 }).catch(() => null);
+    await page.waitForSelector('table', { timeout: 30000 }).catch(() => null);
 
-  // Run continuous loop (e.g. 50 iterations, 5 seconds apart = ~4.5 minutes per GitHub Actions run)
-  const maxIterations = process.env.GITHUB_ACTIONS ? 45 : 3;
-
-  for (let i = 0; i < maxIterations; i++) {
     const tableData = await scrapeLivePage(page);
-    const batch = db.batch();
-    let updatedCount = 0;
+    const contracts = [];
 
     for (const cols of tableData) {
       const rawName = cols[0];
@@ -109,10 +103,7 @@ async function startLiveSync() {
         const bid = cols.length > 10 ? cleanNum(cols[10]) || ltp : ltp;
         const ask = cols.length > 11 ? cleanNum(cols[11]) || ltp : ltp;
 
-        const docId = `${matched.symbol}_${expiry.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`;
-        const docRef = db.collection('market_watch').doc(docId);
-
-        batch.set(docRef, {
+        contracts.push({
           symbol: matched.symbol,
           name: matched.name,
           expiry: expiry,
@@ -125,28 +116,29 @@ async function startLiveSync() {
           pctChange: pctChange,
           bid: bid,
           ask: ask,
-          exchange: 'NCDEX',
-          lastUpdated: FieldValue.serverTimestamp()
-        }, { merge: true });
-
-        updatedCount++;
+          exchange: 'NCDEX'
+        });
       }
     }
 
-    if (updatedCount > 0) {
-      await batch.commit();
-      console.log(`[Tick ${i + 1}/${maxIterations}] Synced ${updatedCount} live contracts directly from exchange DOM.`);
+    if (contracts.length > 0) {
+      // 1 single write consumes only 1 Firestore write quota credit
+      await db.collection('market_watch').doc('live_summary').set({
+        rates: contracts,
+        totalItems: contracts.length,
+        lastUpdated: FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      console.log(`Successfully synced all ${contracts.length} commodities into a single Firestore document!`);
+    } else {
+      console.warn("No matching commodities parsed from DOM table.");
     }
 
-    // Wait 5 seconds before next tick
-    await new Promise(r => setTimeout(r, 5000));
+  } catch (err) {
+    console.error("Scraper execution error:", err.message);
+  } finally {
+    await browser.close();
   }
-
-  await browser.close();
 }
 
-startLiveSync().catch(err => {
-  console.error("Scraper encountered an error:", err);
-  process.exit(1);
-});
-
+startConsolidatedSync();
