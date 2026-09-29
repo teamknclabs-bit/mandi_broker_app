@@ -1,0 +1,33 @@
+name: NCDEX Market Watch Sync
+
+on:
+  schedule:
+    # Runs every 15 minutes, Monday through Friday, between 03:30 and 12:30 UTC (09:00 - 18:00 IST)
+    - cron: '*/15 3-12 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  update-market-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: scripts/ncdex_updater/package-lock.json
+
+      - name: Install dependencies
+        working-directory: scripts/ncdex_updater
+        run: npm ci
+
+      - name: Run NCDEX Updater Script
+        working-directory: scripts/ncdex_updater
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node fetch_ncdex.js
+        
