@@ -16,25 +16,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install dependencies
         working-directory: scripts/ncdex_updater
-        run: |
-          npm install
-          npx puppeteer browsers install chrome
-
-      - name: Write serviceAccountKey.json
-        working-directory: scripts/ncdex_updater
-        env:
-          KEY_DATA: ${{ secrets['serviceAccountKey.json'] || secrets.FIREBASE_SERVICE_KEY }}
-        run: |
-          echo "$KEY_DATA" > serviceAccountKey.json
+        run: npm install
 
       - name: Run Scraper & Push to mandi-market-view
         working-directory: scripts/ncdex_updater
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: node fetch_ncdex.js
-        
+
+      
