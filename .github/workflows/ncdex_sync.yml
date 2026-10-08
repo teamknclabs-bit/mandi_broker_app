@@ -2,15 +2,14 @@ name: NCDEX Live Sync
 
 on:
   schedule:
-    # 09:00 AM & 09:15 AM IST (03:30 & 03:45 UTC), Monday - Friday
-    - cron: '30,45 3 * * 1-5'
-    # Every 15 mins between 09:30 AM - 05:00 PM IST (04:00 - 11:30 UTC), Monday - Friday
-    - cron: '*/15 4-11 * * 1-5'
+    # Triggers every hour from 09:00 AM to 05:00 PM IST (03:30 to 11:30 UTC), Monday - Friday
+    - cron: '30 3-11 * * 1-5'
   workflow_dispatch:
 
 jobs:
   sync-rates:
     runs-on: ubuntu-latest
+    timeout-minutes: 55
 
     steps:
       - name: Checkout repository
@@ -25,10 +24,9 @@ jobs:
         working-directory: scripts/ncdex_updater
         run: npm install
 
-      - name: Run Scraper & Push to mandi-market-view
+      - name: Run 5-Min Sync Engine
         working-directory: scripts/ncdex_updater
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: node fetch_ncdex.js
-
-      
+        

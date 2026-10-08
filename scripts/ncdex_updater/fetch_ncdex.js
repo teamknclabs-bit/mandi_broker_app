@@ -1,10 +1,11 @@
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const { initializeApp, cert, getApps } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
-// 1. Load service account credentials
+// 1. Firebase Credentials Setup
 let serviceAccount;
 const keyPath = path.join(__dirname, 'serviceAccountKey.json');
 
@@ -26,7 +27,6 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   process.exit(1);
 }
 
-// 2. Initialize Firebase Admin SDK for mandi-market-view
 if (getApps().length === 0) {
   initializeApp({
     credential: cert(serviceAccount),
@@ -36,106 +36,121 @@ if (getApps().length === 0) {
 
 const db = getFirestore();
 
-// Baseline contracts with exact multi-month expiries matching the live exchange board
-const DEFAULT_CONTRACTS = [
-  // GUARGUM5
-  { symbol: 'GUARGUM5', expiry: '16-OCT-2026', ltp: 12820, change: -94 },
-  { symbol: 'GUARGUM5', expiry: '20-NOV-2026', ltp: 13030, change: -106 },
-  { symbol: 'GUARGUM5', expiry: '18-DEC-2026', ltp: 13250, change: -66 },
-
-  // GUARSEED10
-  { symbol: 'GUARSEED10', expiry: '16-OCT-2026', ltp: 6671, change: -31 },
-  { symbol: 'GUARSEED10', expiry: '20-NOV-2026', ltp: 6744, change: -25 },
-  { symbol: 'GUARSEED10', expiry: '18-DEC-2026', ltp: 6817, change: -57 },
-
-  // JEERAUNJHA
-  { symbol: 'JEERAUNJHA', expiry: '19-OCT-2026', ltp: 22530, change: 360 },
-  { symbol: 'JEERAUNJHA', expiry: '20-NOV-2026', ltp: 23030, change: 470 },
-
-  // TMCFGRNZM (Turmeric)
-  { symbol: 'TMCFGRNZM', expiry: '16-OCT-2026', ltp: 21250, change: -236 },
-  { symbol: 'TMCFGRNZM', expiry: '18-DEC-2026', ltp: 21750, change: -146 },
-
-  // DHANIYA
-  { symbol: 'DHANIYA', expiry: '16-OCT-2026', ltp: 15300, change: -45 },
-  { symbol: 'DHANIYA', expiry: '20-NOV-2026', ltp: 15650, change: 80 },
-
-  // CHANA
-  { symbol: 'CHANA', expiry: '16-OCT-2026', ltp: 7550, change: 40 },
-  { symbol: 'CHANA', expiry: '20-NOV-2026', ltp: 7680, change: 65 },
-
-  // ISABGOL
-  { symbol: 'ISABGOL', expiry: '19-OCT-2026', ltp: 15450, change: 90 },
-
-  // CASTOR
-  { symbol: 'CASTOR', expiry: '16-OCT-2026', ltp: 7890, change: 12 },
-
-  // KAPAS
-  { symbol: 'KAPAS', expiry: '16-OCT-2026', ltp: 1825, change: -8 }
+// Commodities to match with exchange display names
+const WATCH_ITEMS = [
+  { match: 'guar gum', symbol: 'GUARGUM5' },
+  { match: 'guar seed', symbol: 'GUARSEED10' },
+  { match: 'jeera', symbol: 'JEERAUNJHA' },
+  { match: 'turmeric', symbol: 'TMCFGRNZM' },
+  { match: 'dhaniya', symbol: 'DHANIYA' },
+  { match: 'chana', symbol: 'CHANA' },
+  { match: 'castor', symbol: 'CASTOR' },
+  { match: 'cotton seed', symbol: 'COK2' },
+  { match: 'isabgol', symbol: 'ISABGOL' },
+  { match: 'kapas', symbol: 'KAPAS' },
 ];
 
-async function syncNcdex() {
-  console.log("⏳ Fetching live multi-expiry quotes...");
+async function fetchAccurateNcdexRates() {
+  console.log(`[${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST] ⏳ Fetching live exchange quotes...`);
   const finalRates = [];
   const seen = new Set();
 
   try {
-    const res = await axios.get('https://www.ncdex.com/api/market-watch/live-quotes', {
+    const res = await axios.get('https://www.ncdex.com/market-watch/live_quotes', {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://www.ncdex.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://www.ncdex.com/',
       },
-      timeout: 10000
+      timeout: 15000
     });
 
-    const items = res.data?.data || res.data || [];
-    if (Array.isArray(items) && items.length > 0) {
-      for (const row of items) {
-        const symbol = String(row.Symbol || row.Product || '').trim().toUpperCase();
-        const expiry = String(row.Expiry || row.expiryDate || '').trim().toUpperCase();
-        const key = `${symbol}_${expiry}`;
+    const $ = cheerio.load(res.data);
 
-        if (symbol && expiry && !seen.has(key)) {
-          const ltpVal = parseFloat(String(row.LTP || row.ltp || row.Price || '').replace(/,/g, ''));
-          const chgVal = parseFloat(String(row.Change || row.change || '').replace(/,/g, ''));
+    // Parse live futures table rows
+    $('table tbody tr, table tr').each((_, row) => {
+      const cols = $(row).find('td').map((_, el) =>$(el).text().trim()).get();
+      if (cols.length >= 7) {
+        const prodName = cols[0].toLowerCase();
+        const expiry = cols[1].toUpperCase().replace(/\s+/g, '-');
+        
+        // Find price and change
+        const ltpRaw = cols[4] || cols[3] || cols[2] || '';
+        const ltp = parseFloat(ltpRaw.replace(/,/g, ''));
+        const changeRaw = cols[6] || cols[5] || '0';
+        const change = parseFloat(changeRaw.replace(/,/g, '').replace(/%/g, ''));
 
-          if (!isNaN(ltpVal)) {
-            finalRates.push({
-              symbol: symbol,
-              expiry: expiry,
-              ltp: ltpVal,
-              change: isNaN(chgVal) ? 0 : chgVal
-            });
-            seen.add(key);
+        for (const item of WATCH_ITEMS) {
+          if (prodName.includes(item.match)) {
+            const key = `${item.symbol}_${expiry}`;
+            if (!seen.has(key) && !isNaN(ltp) && ltp > 0) {
+              finalRates.push({
+                symbol: item.symbol,
+                expiry: expiry,
+                ltp: ltp,
+                change: isNaN(change) ? 0 : change
+              });
+              seen.add(key);
+            }
           }
         }
       }
-    }
+    });
   } catch (err) {
-    console.warn("⚠️ Using multi-expiry fallback baseline:", err.message);
+    console.warn("⚠️ Live page query warning:", err.message);
   }
 
-  // Populate any unretrieved contracts from the default multi-expiry baseline
-  for (const item of DEFAULT_CONTRACTS) {
-    const key = `${item.symbol}_${item.expiry}`;
-    if (!seen.has(key)) {
-      finalRates.push(item);
-      seen.add(key);
+  // Push to secondary Firestore only when valid rates exist
+  if (finalRates.length > 0) {
+    try {
+      await db.collection('market_watch').doc('live_summary').set({
+        rates: finalRates,
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      console.log(`✅ Updated ${finalRates.length} genuine contracts in mandi-market-view!`);
+    } catch (dbErr) {
+      console.error("❌ Firestore update failed:", dbErr.message);
     }
-  }
-
-  try {
-    await db.collection('market_watch').doc('live_summary').set({
-      rates: finalRates,
-      updatedAt: FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    console.log(`✅ Successfully updated ${finalRates.length} multi-expiry contracts in mandi-market-view!`);
-  } catch (err) {
-    console.error("❌ Firestore update failed:", err.message);
-    process.exit(1);
+  } else {
+    console.log("ℹ️ Market closed or table refreshing. Existing rates preserved.");
   }
 }
 
-syncNcdex();
+// Check if currently within NCDEX hours: 09:00 AM to 05:00 PM IST (Mon-Fri)
+function isMarketHours() {
+  const istDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const day = istDate.getDay();
+  if (day === 0 || day === 6) return false; // Weekend closed
+  const hour = istDate.getHours();
+  return hour >= 9 && hour < 17;
+}
+
+async function startFiveMinSync() {
+  // 1. Initial immediate execution
+  await fetchAccurateNcdexRates();
+
+  // If triggered by cron or outside trade hours, run once and exit
+  if (!isMarketHours()) {
+    console.log("ℹ️ Market trading hours closed. Single sync complete.");
+    process.exit(0);
+  }
+
+  // If running inside active session, loop every 5 minutes (300,000 ms) for 50 minutes per runner job
+  console.log("🚀 Starting 5-minute continuous sync loop for active trading hours...");
+  let count = 0;
+  const maxLoops = 10; // 10 iterations * 5 min = ~50 mins (runner limit friendly)
+
+  const interval = setInterval(async () => {
+    count++;
+    if (count >= maxLoops || !isMarketHours()) {
+      clearInterval(interval);
+      console.log("🏁 Cycle ended. Yielding for next scheduled window.");
+      process.exit(0);
+    }
+    await fetchAccurateNcdexRates();
+  }, 5 * 60 * 1000);
+}
+
+startFiveMinSync();
+
