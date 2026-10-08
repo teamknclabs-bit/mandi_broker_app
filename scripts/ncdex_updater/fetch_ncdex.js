@@ -36,17 +36,42 @@ if (getApps().length === 0) {
 
 const db = getFirestore();
 
-// Commodities to track
+// Comprehensive NCDEX Commodity Catalog
 const TARGET_MAP = [
+  // --- SPICES & SEEDS ---
   { match: 'jeera', symbol: 'JEERAUNJHA', defaultLtp: 24655, defaultChange: 185 },
-  { match: 'chana', symbol: 'CHANA', defaultLtp: 7600, defaultChange: 52 },
   { match: 'dhaniya', symbol: 'DHANIYA', defaultLtp: 15890, defaultChange: 586 },
+  { match: 'turmeric', symbol: 'TMCFGRNZM', defaultLtp: 13800, defaultChange: 80 },
+  { match: 'isabgol', symbol: 'ISABGOL', defaultLtp: 15900, defaultChange: 100 },
+  { match: 'saunf', symbol: 'FENNEL', defaultLtp: 9200, defaultChange: 45 },
+  { match: 'fennel', symbol: 'FENNEL', defaultLtp: 9200, defaultChange: 45 },
+  { match: 'methi', symbol: 'FENUGREEK', defaultLtp: 5850, defaultChange: 20 },
+
+  // --- GUAR COMPLEX ---
   { match: 'guar seed', symbol: 'GUARSEED10', defaultLtp: 7462, defaultChange: 287 },
   { match: 'guar gum', symbol: 'GUARGUM5', defaultLtp: 14491, defaultChange: 557 },
-  { match: 'isabgol', symbol: 'ISABGOL', defaultLtp: 15900, defaultChange: 100 },
+
+  // --- GRAINS & PULSES ---
+  { match: 'chana', symbol: 'CHANA', defaultLtp: 7600, defaultChange: 52 },
+  { match: 'moong', symbol: 'MOONG', defaultLtp: 8400, defaultChange: 35 },
+  { match: 'moth', symbol: 'MOTH', defaultLtp: 6200, defaultChange: 15 },
+  { match: 'wheat', symbol: 'WHEAT', defaultLtp: 2820, defaultChange: 12 },
+  { match: 'bajra', symbol: 'BAJRA', defaultLtp: 2350, defaultChange: 8 },
+  { match: 'maize', symbol: 'MAIZE', defaultLtp: 2240, defaultChange: 14 },
+  { match: 'barley', symbol: 'BARLEY', defaultLtp: 2110, defaultChange: -6 },
+
+  // --- OILSEEDS & OILS ---
   { match: 'castor', symbol: 'CASTOR', defaultLtp: 7990, defaultChange: 103 },
-  { match: 'turmeric', symbol: 'TMCFGRNZM', defaultLtp: 13800, defaultChange: 80 },
+  { match: 'mustard', symbol: 'RMSEED', defaultLtp: 5950, defaultChange: 40 },
+  { match: 'rmseed', symbol: 'RMSEED', defaultLtp: 5950, defaultChange: 40 },
+  { match: 'soybean', symbol: 'SYBEANIDR', defaultLtp: 4420, defaultChange: -18 },
+  { match: 'cottonseed', symbol: 'COK2', defaultLtp: 2850, defaultChange: 22 },
+  { match: 'sesame', symbol: 'TIL', defaultLtp: 13200, defaultChange: 110 },
+  { match: 'til', symbol: 'TIL', defaultLtp: 13200, defaultChange: 110 },
+
+  // --- FIBERS ---
   { match: 'kapas', symbol: 'KAPAS', defaultLtp: 1831, defaultChange: -5 },
+  { match: 'cotton', symbol: 'COTTON', defaultLtp: 56400, defaultChange: 350 },
 ];
 
 async function syncNcdex() {
